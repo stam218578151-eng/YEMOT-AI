@@ -1,20 +1,29 @@
-name: Extract supplied project archive
+name: Import supplied project archive
 on:
   push:
     paths:
-      - project-bootstrap.zip
+      - project-bootstrap.ready
   workflow_dispatch:
 permissions:
   contents: write
 jobs:
   extract:
-    if: ${{ github.event_name == 'workflow_dispatch' || hashFiles('project-bootstrap.zip') != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+      - name: Rebuild archive from uploaded parts
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          parts = sorted(Path("archive_parts").glob("*.b64"))
+          if not Path("project-bootstrap.zip").exists() and parts:
+              encoded = "".join(p.read_text(encoding="ascii") for p in parts)
+              Path("project-bootstrap.zip").write_bytes(base64.b64decode(encoded, validate=True))
+          PY
       - name: Extract archive and normalize paths
         run: |
           python - <<'PY'
@@ -22,8 +31,7 @@ jobs:
           from zipfile import ZipFile
           archive = Path("project-bootstrap.zip")
           if not archive.exists():
-              print("Archive already extracted; nothing to do.")
-              raise SystemExit(0)
+              raise SystemExit("Project archive is missing")
           with ZipFile(archive) as z:
               for item in z.infolist():
                   rel = PurePosixPath(item.filename.replace("\\", "/"))
@@ -35,11 +43,15 @@ jobs:
                   target.parent.mkdir(parents=True, exist_ok=True)
                   target.write_bytes(z.read(item.filename))
           archive.unlink()
+          for part in Path("archive_parts").glob("*.b64"):
+              part.unlink()
+          Path("archive_parts").rmdir()
+          Path("project-bootstrap.ready").unlink(missing_ok=True)
           PY
       - name: Commit extracted project files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Import supplied Yemot AI project files" || echo "No changes"
+          git commit -m "Import supplied Yemot AI project files"
           git push
